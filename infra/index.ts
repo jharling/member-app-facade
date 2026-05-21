@@ -10,6 +10,8 @@ const desiredCount = config.getNumber("desiredCount") ?? 1;
 const cpu = config.get("cpu") ?? "256";
 const memory = config.get("memory") ?? "512";
 const allowedCidrs = config.getObject<string[]>("allowedCidrs") ?? ["0.0.0.0/0"];
+const vpcLinkUnsupportedAvailabilityZoneIds = config.getObject<string[]>("vpcLinkUnsupportedAvailabilityZoneIds") ?? ["use1-az3"];
+const configuredVpcLinkSubnetIds = config.getObject<string[]>("vpcLinkSubnetIds");
 const configuredVpcId = config.get("vpcId");
 const configuredSubnetIds = config.getObject<string[]>("subnetIds");
 const currentRegion = aws.getRegionOutput({});
@@ -28,6 +30,15 @@ const defaultSubnets = configuredSubnetIds
     });
 
 const subnetIds: pulumi.Input<pulumi.Input<string>[]> = configuredSubnetIds ?? defaultSubnets!.ids;
+const vpcLinkSubnetIds: pulumi.Input<pulumi.Input<string>[]> = configuredVpcLinkSubnetIds ?? pulumi
+    .output(subnetIds)
+    .apply(async ids => {
+        const subnets = await Promise.all(ids.map(id => aws.ec2.getSubnet({ id })));
+
+        return subnets
+            .filter(subnet => !vpcLinkUnsupportedAvailabilityZoneIds.includes(subnet.availabilityZoneId))
+            .map(subnet => subnet.id);
+    });
 
 const repository = new aws.ecr.Repository("repository", {
     name: appName,
@@ -159,6 +170,19 @@ new aws.iam.RolePolicy("task-cognito-policy", {
     }),
 });
 
+const apiGatewaySecurityGroup = new aws.ec2.SecurityGroup("api-gateway-security-group", {
+    name: `${appName}-api-gateway`,
+    description: "Allow API Gateway VPC Link traffic to the load balancer",
+    vpcId: defaultVpc.id,
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Outbound traffic to the load balancer",
+    }],
+});
+
 const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-security-group", {
     name: `${appName}-alb`,
     description: "Allow API Gateway traffic to the load balancer",
@@ -169,6 +193,12 @@ const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-secur
         toPort: 80,
         cidrBlocks: allowedCidrs,
         description: "Public HTTP traffic",
+    }, {
+        protocol: "tcp",
+        fromPort: 80,
+        toPort: 80,
+        securityGroups: [apiGatewaySecurityGroup.id],
+        description: "API Gateway VPC Link HTTP traffic",
     }],
     egress: [{
         protocol: "-1",
@@ -206,6 +236,7 @@ const serviceSecurityGroup = new aws.ec2.SecurityGroup("service-security-group",
 const loadBalancer = new aws.lb.LoadBalancer("load-balancer", {
     name: `${appName}-alb`,
     loadBalancerType: "application",
+    internal: true,
     subnets: subnetIds,
     securityGroups: [loadBalancerSecurityGroup.id],
 });
@@ -237,11 +268,19 @@ const api = new aws.apigatewayv2.Api("api", {
     protocolType: "HTTP",
 });
 
+const apiGatewayVpcLink = new aws.apigatewayv2.VpcLink("api-gateway-vpc-link", {
+    name: appName,
+    securityGroupIds: [apiGatewaySecurityGroup.id],
+    subnetIds: vpcLinkSubnetIds,
+});
+
 const apiRootIntegration = new aws.apigatewayv2.Integration("api-root-integration", {
     apiId: api.id,
     integrationType: "HTTP_PROXY",
     integrationMethod: "ANY",
-    integrationUri: pulumi.interpolate`http://${loadBalancer.dnsName}`,
+    integrationUri: listener.arn,
+    connectionType: "VPC_LINK",
+    connectionId: apiGatewayVpcLink.id,
     payloadFormatVersion: "1.0",
 });
 
@@ -249,7 +288,9 @@ const apiProxyIntegration = new aws.apigatewayv2.Integration("api-proxy-integrat
     apiId: api.id,
     integrationType: "HTTP_PROXY",
     integrationMethod: "ANY",
-    integrationUri: pulumi.interpolate`http://${loadBalancer.dnsName}/{proxy}`,
+    integrationUri: listener.arn,
+    connectionType: "VPC_LINK",
+    connectionId: apiGatewayVpcLink.id,
     payloadFormatVersion: "1.0",
 });
 
