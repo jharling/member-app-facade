@@ -1,0 +1,22 @@
+{
+  "name": "member-app-facade-security",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "member-app-pentest-mcp": "./bin/mcp.js",
+    "member-app-pentest": "./bin/scan.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "scan": "node bin/scan.js",
+    "mcp": "node bin/mcp.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "^5.8.0"
+  }
+}

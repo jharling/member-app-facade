@@ -38,10 +38,16 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: infra/package-lock.json
+          cache-dependency-path: |
+            infra/package-lock.json
+            security/package-lock.json
 
       - name: Install infrastructure dependencies
         working-directory: infra
+        run: npm ci
+
+      - name: Install security test dependencies
+        working-directory: security
         run: npm ci
 
       - name: Deploy with Pulumi
@@ -50,5 +56,16 @@ jobs:
           command: up
           stack-name: ${{ vars.PULUMI_STACK || 'dev' }}
           work-dir: infra
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Run security smoke test
+        run: |
+          TARGET_URL="$(pulumi stack output serviceBaseUrl --cwd infra)"
+          TARGET_HOST="$(node -e "console.log(new URL(process.argv[1]).hostname)" "$TARGET_URL")"
+          npm --prefix security run scan -- \
+            --target-url "$TARGET_URL" \
+            --allow-host "$TARGET_HOST" \
+            --fail-on high
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}

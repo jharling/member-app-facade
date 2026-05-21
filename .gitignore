@@ -4,6 +4,8 @@ build/
 lib/
 infra/bin/
 infra/node_modules/
+security/bin/
+security/node_modules/
 .env
 .env.*
 *.log

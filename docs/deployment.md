@@ -120,6 +120,8 @@ pulumi stack output swaggerUrl
 
 When `enableLoadBalancer=false`, these outputs use the current ECS task public IP, which can change when ECS replaces the task. When `enableLoadBalancer=true`, they use the load balancer DNS name.
 
+The GitHub deploy workflow also runs a scoped security smoke test after deployment. The test target comes from `pulumi stack output serviceBaseUrl`, and the resolved host is explicitly allowlisted for that run. The current CI gate fails only on `high` severity findings so the known HTTP/TLS limitation of the low-cost no-load-balancer setup is reported without blocking deployment.
+
 Destroy all AWS resources:
 
 ```bash
