@@ -237,7 +237,7 @@ const api = new aws.apigatewayv2.Api("api", {
     protocolType: "HTTP",
 });
 
-const apiIntegration = new aws.apigatewayv2.Integration("api-integration", {
+const apiRootIntegration = new aws.apigatewayv2.Integration("api-root-integration", {
     apiId: api.id,
     integrationType: "HTTP_PROXY",
     integrationMethod: "ANY",
@@ -245,16 +245,24 @@ const apiIntegration = new aws.apigatewayv2.Integration("api-integration", {
     payloadFormatVersion: "1.0",
 });
 
+const apiProxyIntegration = new aws.apigatewayv2.Integration("api-proxy-integration", {
+    apiId: api.id,
+    integrationType: "HTTP_PROXY",
+    integrationMethod: "ANY",
+    integrationUri: pulumi.interpolate`http://${loadBalancer.dnsName}/{proxy}`,
+    payloadFormatVersion: "1.0",
+});
+
 new aws.apigatewayv2.Route("api-root-route", {
     apiId: api.id,
     routeKey: "ANY /",
-    target: pulumi.interpolate`integrations/${apiIntegration.id}`,
+    target: pulumi.interpolate`integrations/${apiRootIntegration.id}`,
 });
 
 new aws.apigatewayv2.Route("api-proxy-route", {
     apiId: api.id,
     routeKey: "ANY /{proxy+}",
-    target: pulumi.interpolate`integrations/${apiIntegration.id}`,
+    target: pulumi.interpolate`integrations/${apiProxyIntegration.id}`,
 });
 
 new aws.apigatewayv2.Stage("api-stage", {
