@@ -9,8 +9,9 @@ This is intentionally not an exploit framework. It is a guardrail for this proje
 The implementation lives in `security/`:
 
 - `security/src/scanner.ts`: shared scan engine used by both the CLI and MCP server
+- `security/src/toolkit.ts`: additional MCP-only security tools for secrets, dependencies, IaC, containers, ZAP, and release gates
 - `security/src/scan.ts`: command-line wrapper for CI and local runs
-- `security/src/mcp.ts`: MCP server exposing the `security_smoke_test` tool
+- `security/src/mcp.ts`: MCP server exposing all security tools
 - `security/package.json`: scripts and dependencies
 
 The deploy workflow runs the CLI after Pulumi deploys the service:
@@ -103,7 +104,7 @@ Then it passes the extracted host to the scanner:
 
 ## MCP Server
 
-The MCP server wraps the same scanner logic in a tool named `security_smoke_test`. This lets an MCP-capable client run the scan interactively, inspect the text summary, and consume the JSON findings.
+The MCP server wraps the HTTP scanner and additional local security checks as tools. This lets an MCP-capable client run checks interactively, inspect the text summary, and consume JSON findings.
 
 The MCP tool is useful when you want an assistant or local automation client to answer questions like:
 
@@ -111,8 +112,107 @@ The MCP tool is useful when you want an assistant or local automation client to 
 - is Swagger exposed?
 - what security findings are currently failing?
 - what would block CI at the current severity threshold?
+- are there likely secrets, dependency risks, IaC risks, or image scanning gaps?
 
 The MCP server communicates over stdio, so it can be launched by any MCP client that supports local command-based servers.
+
+## MCP Tools
+
+### `security_smoke_test`
+
+Runs the HTTP smoke test against the deployed or local service.
+
+Primary arguments:
+
+- `targetUrl`
+- `allowedHosts`
+- `failOn`
+- `readinessRetries`
+- `readinessDelayMs`
+
+### `scan_secrets`
+
+Scans source files for common secret patterns such as AWS keys, private keys, GitHub tokens, and generic token/password assignments.
+
+Primary arguments:
+
+- `repoRoot`
+- `failOn`
+
+This is a lightweight built-in scanner. A future improvement should add a mature scanner such as `gitleaks` or `trufflehog`.
+
+### `scan_container_image`
+
+Checks that a local container image exists and, when `trivy` is installed, scans for high and critical vulnerabilities.
+
+Primary arguments:
+
+- `image`, for example `member-app-facade:local`
+- `failOn`
+
+Requirements:
+
+- Docker for image inspection
+- Optional: `trivy` for vulnerability scanning
+
+If Trivy is missing, the tool returns a medium-severity finding that image CVE scanning was skipped.
+
+### `scan_iac`
+
+Checks the Pulumi infrastructure code for a small set of project-specific IaC controls:
+
+- ECR scan on push is enabled
+- CloudWatch log retention is configured
+- default public ingress is highlighted
+- optional Checkov scan when `checkov` is installed
+
+Primary arguments:
+
+- `repoRoot`
+- `failOn`
+
+If Checkov is missing, the tool returns a medium-severity finding that deep IaC scanning was skipped.
+
+### `scan_dependencies`
+
+Runs dependency checks for the repo:
+
+- `npm audit --audit-level=high` in `infra`
+- `npm audit --audit-level=high` in `security`
+- Gradle dependency graph resolution for the app
+
+Primary arguments:
+
+- `repoRoot`
+- `failOn`
+
+### `zap_baseline_scan`
+
+Runs OWASP ZAP baseline mode in a Docker container against an explicitly allowlisted target.
+
+Primary arguments:
+
+- `targetUrl`
+- `allowedHosts`
+- `failOn`
+
+Requirements:
+
+- Docker
+- network access to pull `ghcr.io/zaproxy/zaproxy:stable`
+
+This is intended for non-destructive passive scanning. The target host must be explicitly allowlisted.
+
+### `evaluate_release_gate`
+
+Combines one or more scan results and evaluates whether the release should pass at a given severity threshold.
+
+Primary arguments:
+
+- `scanResultsJson`: JSON array of `ScanResult` objects
+- `failOn`
+
+This is useful when an MCP client runs several tools and wants one final pass/fail decision.
 
 ## CI Usage
 
@@ -224,7 +324,7 @@ Current limitations:
 - It does not authenticate.
 - It does not perform destructive tests.
 - It does not fuzz request parameters.
-- It does not validate AWS-side controls such as security group rules, IAM policies, or ECS task role permissions.
+- IaC and dependency checks are intentionally lightweight unless optional tools such as Checkov, Trivy, or ZAP are installed.
 - It only uploads failed findings to SARIF. Passing checks remain visible in the workflow log, not as code scanning alerts.
 - With `enableLoadBalancer=false`, the ECS task public IP can change when the task is replaced. Pulumi outputs are updated during deploy, but a direct task URL is still not a stable production endpoint.
 - The deploy workflow currently waits up to 3 minutes for `/hello` to become ready. Very slow image pulls, networking delays, or ECS replacement events can still exceed that window.
@@ -290,18 +390,18 @@ Add a separate AWS posture check that uses AWS APIs to validate:
 
 These checks should be separate from HTTP scanning because they evaluate infrastructure, not the running web service.
 
-### Add Dependency And Container Scanning
+### Deepen Dependency And Container Scanning
 
-Integrate tools such as:
+The MCP now has lightweight dependency and container-image tools. Future improvements could make them deeper by adding:
 
 - Gradle dependency vulnerability checks
-- npm audit for the `infra` and `security` packages
-- container image scanning before push
+- mandatory Trivy scanning in CI
 - ECR scan result checks after image push
+- SBOM generation and retention
 
-### Add ZAP Baseline Scanning
+### Automate ZAP Baseline Scanning In CI
 
-For a broader dynamic scan, add OWASP ZAP baseline mode against the deployed URL. Keep it non-destructive and scoped to the project URL. ZAP would complement this MCP by providing broader passive checks.
+The MCP includes `zap_baseline_scan`, but the deploy workflow does not run it by default because it pulls and runs the ZAP container and can add time to every deployment. A future improvement could run it on a schedule, before release tags, or only for staging/prod environments.
 
 ### Add Environments And Thresholds
 
