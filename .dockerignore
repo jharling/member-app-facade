@@ -1,0 +1,10 @@
+.git
+.github
+.gradle
+.idea
+build
+infra/node_modules
+infra/bin
+lib
+out
+*.iml

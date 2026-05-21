@@ -1,0 +1,3 @@
+name: member-app-facade
+runtime: nodejs
+description: ECS deployment for the member app facade microservice
