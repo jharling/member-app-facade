@@ -13,6 +13,8 @@ export interface ScanOptions {
     targetUrl: string;
     failOn?: Severity;
     allowedHosts?: string[];
+    readinessRetries?: number;
+    readinessDelayMs?: number;
 }
 
 export interface ScanResult {
@@ -35,6 +37,9 @@ const defaultAllowedHosts = [
     "127.0.0.1",
     "::1",
 ];
+
+const defaultReadinessRetries = 30;
+const defaultReadinessDelayMs = 5000;
 
 function normalizeBaseUrl(targetUrl: string): URL {
     const url = new URL(targetUrl);
@@ -68,12 +73,18 @@ async function get(url: URL): Promise<Response> {
     });
 }
 
+function sleep(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function header(response: Response, name: string): string | null {
     return response.headers.get(name);
 }
 
 export async function scanTarget(options: ScanOptions): Promise<ScanResult> {
     const failOn = options.failOn ?? "medium";
+    const readinessRetries = options.readinessRetries ?? defaultReadinessRetries;
+    const readinessDelayMs = options.readinessDelayMs ?? defaultReadinessDelayMs;
     const baseUrl = normalizeBaseUrl(options.targetUrl);
     const allowedHosts = options.allowedHosts?.length
         ? [...defaultAllowedHosts, ...options.allowedHosts]
@@ -86,17 +97,35 @@ export async function scanTarget(options: ScanOptions): Promise<ScanResult> {
     const swaggerUrl = new URL("/swagger-ui.html", baseUrl);
     const apiDocsUrl = new URL("/v3/api-docs", baseUrl);
 
-    let hello: Response;
-    try {
-        hello = await get(helloUrl);
-    } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
+    let hello: Response | undefined;
+    let lastReadinessDetail = "not attempted";
+
+    for (let attempt = 1; attempt <= readinessRetries; attempt += 1) {
+        try {
+            const response = await get(helloUrl);
+            lastReadinessDetail = `attempt ${attempt}/${readinessRetries} returned HTTP ${response.status}`;
+
+            if (response.status === 200) {
+                hello = response;
+                break;
+            }
+        } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            lastReadinessDetail = `attempt ${attempt}/${readinessRetries} failed: ${detail}`;
+        }
+
+        if (attempt < readinessRetries) {
+            await sleep(readinessDelayMs);
+        }
+    }
+
+    if (!hello) {
         findings.push({
             id: "TARGET-REACHABLE",
             severity: "high",
             passed: false,
             title: "Target service is reachable",
-            detail: `GET ${helloUrl.href} failed: ${detail}.`,
+            detail: `GET ${helloUrl.href} did not become ready after ${readinessRetries} attempts with ${readinessDelayMs}ms delay. Last result: ${lastReadinessDetail}.`,
             recommendation: "Confirm the ECS task is running, the public IP is current, security group ingress allows port 8080, and the service is listening.",
         });
 
@@ -116,7 +145,7 @@ export async function scanTarget(options: ScanOptions): Promise<ScanResult> {
         severity: "high",
         passed: hello.status === 200,
         title: "Hello endpoint is reachable",
-        detail: `GET ${helloUrl.href} returned HTTP ${hello.status}.`,
+        detail: `GET ${helloUrl.href} returned HTTP ${hello.status} after readiness wait. Last readiness result: ${lastReadinessDetail}.`,
         recommendation: "Confirm the ECS service is running, the task security group allows the expected source, and the container listens on port 8080.",
     });
 

@@ -14,12 +14,16 @@ server.tool(
         targetUrl: z.string().url().describe("Base URL to test, for example http://127.0.0.1:8080"),
         allowedHosts: z.array(z.string()).default([]).describe("Additional allowed target hostnames or IPs"),
         failOn: z.enum(["info", "low", "medium", "high"]).default("medium"),
+        readinessRetries: z.number().int().positive().default(30),
+        readinessDelayMs: z.number().int().positive().default(5000),
     },
-    async ({ targetUrl, allowedHosts, failOn }) => {
+    async ({ targetUrl, allowedHosts, failOn, readinessRetries, readinessDelayMs }) => {
         const result = await scanTarget({
             targetUrl,
             allowedHosts,
             failOn,
+            readinessRetries,
+            readinessDelayMs,
         });
 
         return {

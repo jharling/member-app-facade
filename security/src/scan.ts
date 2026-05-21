@@ -4,6 +4,8 @@ interface CliOptions {
     targetUrl?: string;
     failOn?: Severity;
     allowedHosts: string[];
+    readinessRetries?: number;
+    readinessDelayMs?: number;
     json: boolean;
 }
 
@@ -26,6 +28,12 @@ function parseArgs(args: string[]): CliOptions {
         } else if (arg === "--allow-host") {
             options.allowedHosts.push(next);
             index += 1;
+        } else if (arg === "--readiness-retries") {
+            options.readinessRetries = Number(next);
+            index += 1;
+        } else if (arg === "--readiness-delay-ms") {
+            options.readinessDelayMs = Number(next);
+            index += 1;
         } else if (arg === "--json") {
             options.json = true;
         } else if (arg === "--help" || arg === "-h") {
@@ -46,6 +54,8 @@ Options:
   --target-url <url>     Base URL to test, for example http://127.0.0.1:8080
   --allow-host <host>    Additional allowed target host. Repeatable.
   --fail-on <severity>   info, low, medium, or high. Default: medium
+  --readiness-retries <n> Number of /hello readiness attempts. Default: 30
+  --readiness-delay-ms <n> Delay between readiness attempts. Default: 5000
   --json                 Print JSON instead of text
 `);
 }
@@ -62,6 +72,8 @@ async function main(): Promise<void> {
         targetUrl,
         failOn: options.failOn,
         allowedHosts: options.allowedHosts,
+        readinessRetries: options.readinessRetries,
+        readinessDelayMs: options.readinessDelayMs,
     });
 
     if (options.json) {
@@ -79,4 +91,3 @@ main().catch((error) => {
     console.error(error instanceof Error ? error.message : error);
     process.exit(1);
 });
-
