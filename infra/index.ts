@@ -1,7 +1,6 @@
 import * as aws from "@pulumi/aws";
 import * as dockerBuild from "@pulumi/docker-build";
 import * as pulumi from "@pulumi/pulumi";
-import { execFileSync } from "child_process";
 
 const appName = "member-app-facade";
 const containerPort = 8080;
@@ -10,10 +9,8 @@ const config = new pulumi.Config();
 const desiredCount = config.getNumber("desiredCount") ?? 1;
 const cpu = config.get("cpu") ?? "256";
 const memory = config.get("memory") ?? "512";
-const allowedCidrs = config.getObject<string[]>("allowedCidrs") ?? ["0.0.0.0/0"];
 const configuredVpcId = config.get("vpcId");
 const configuredSubnetIds = config.getObject<string[]>("subnetIds");
-const enableLoadBalancer = config.getBoolean("enableLoadBalancer") ?? false;
 const currentRegion = aws.getRegionOutput({});
 
 const defaultVpc = configuredVpcId
@@ -95,6 +92,37 @@ const cluster = new aws.ecs.Cluster("cluster", {
     name: appName,
 });
 
+const userPool = new aws.cognito.UserPool("user-pool", {
+    name: appName,
+    usernameAttributes: ["email"],
+    autoVerifiedAttributes: ["email"],
+    passwordPolicy: {
+        minimumLength: 8,
+        requireLowercase: true,
+        requireNumbers: true,
+        requireSymbols: false,
+        requireUppercase: true,
+    },
+    schemas: [{
+        attributeDataType: "String",
+        name: "email",
+        required: true,
+        mutable: true,
+    }],
+});
+
+const userPoolClient = new aws.cognito.UserPoolClient("user-pool-client", {
+    name: `${appName}-client`,
+    userPoolId: userPool.id,
+    generateSecret: false,
+    explicitAuthFlows: [
+        "ALLOW_USER_PASSWORD_AUTH",
+        "ALLOW_REFRESH_TOKEN_AUTH",
+        "ALLOW_USER_SRP_AUTH",
+    ],
+    preventUserExistenceErrors: "ENABLED",
+});
+
 const taskExecutionRole = new aws.iam.Role("task-execution-role", {
     assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
         Service: "ecs-tasks.amazonaws.com",
@@ -106,16 +134,73 @@ new aws.iam.RolePolicyAttachment("task-execution-policy", {
     policyArn: aws.iam.ManagedPolicy.AmazonECSTaskExecutionRolePolicy,
 });
 
+const taskRole = new aws.iam.Role("task-role", {
+    assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+        Service: "ecs-tasks.amazonaws.com",
+    }),
+});
+
+new aws.iam.RolePolicy("task-cognito-policy", {
+    role: taskRole.id,
+    policy: pulumi.jsonStringify({
+        Version: "2012-10-17",
+        Statement: [{
+            Effect: "Allow",
+            Action: [
+                "cognito-idp:SignUp",
+                "cognito-idp:ConfirmSignUp",
+                "cognito-idp:InitiateAuth",
+                "cognito-idp:ForgotPassword",
+                "cognito-idp:ConfirmForgotPassword",
+            ],
+            Resource: userPool.arn,
+        }],
+    }),
+});
+
+const apiGatewaySecurityGroup = new aws.ec2.SecurityGroup("api-gateway-security-group", {
+    name: `${appName}-api-gateway`,
+    description: "Allow API Gateway VPC Link traffic to the load balancer",
+    vpcId: defaultVpc.id,
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Outbound traffic to the load balancer",
+    }],
+});
+
+const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-security-group", {
+    name: `${appName}-alb`,
+    description: "Allow API Gateway traffic to the load balancer",
+    vpcId: defaultVpc.id,
+    ingress: [{
+        protocol: "tcp",
+        fromPort: 80,
+        toPort: 80,
+        securityGroups: [apiGatewaySecurityGroup.id],
+        description: "API Gateway VPC Link HTTP traffic",
+    }],
+    egress: [{
+        protocol: "-1",
+        fromPort: 0,
+        toPort: 0,
+        cidrBlocks: ["0.0.0.0/0"],
+        description: "Outbound traffic",
+    }],
+});
+
 const serviceSecurityGroup = new aws.ec2.SecurityGroup("service-security-group", {
     name: `${appName}-service`,
-    description: "Allow HTTP traffic to the ECS task",
+    description: "Allow load balancer traffic to the ECS task",
     vpcId: defaultVpc.id,
     ingress: [{
         protocol: "tcp",
         fromPort: containerPort,
         toPort: containerPort,
-        cidrBlocks: allowedCidrs,
-        description: "Application HTTP traffic",
+        securityGroups: [loadBalancerSecurityGroup.id],
+        description: "Application HTTP traffic from load balancer",
     }],
     egress: [{
         protocol: "-1",
@@ -126,60 +211,74 @@ const serviceSecurityGroup = new aws.ec2.SecurityGroup("service-security-group",
     }],
 });
 
-let loadBalancer: aws.lb.LoadBalancer | undefined;
-let targetGroup: aws.lb.TargetGroup | undefined;
-let listener: aws.lb.Listener | undefined;
+const loadBalancer = new aws.lb.LoadBalancer("load-balancer", {
+    name: `${appName}-alb`,
+    loadBalancerType: "application",
+    internal: true,
+    subnets: subnetIds,
+    securityGroups: [loadBalancerSecurityGroup.id],
+});
 
-if (enableLoadBalancer) {
-    const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-security-group", {
-        name: `${appName}-alb`,
-        description: "Allow public HTTP traffic to the load balancer",
-        vpcId: defaultVpc.id,
-        ingress: [{
-            protocol: "tcp",
-            fromPort: 80,
-            toPort: 80,
-            cidrBlocks: allowedCidrs,
-            description: "Public HTTP traffic",
-        }],
-        egress: [{
-            protocol: "-1",
-            fromPort: 0,
-            toPort: 0,
-            cidrBlocks: ["0.0.0.0/0"],
-            description: "Outbound traffic",
-        }],
-    });
+const targetGroup = new aws.lb.TargetGroup("target-group", {
+    name: `${appName}-tg`,
+    port: containerPort,
+    protocol: "HTTP",
+    targetType: "ip",
+    vpcId: defaultVpc.id,
+    healthCheck: {
+        path: "/hello",
+        matcher: "200",
+    },
+});
 
-    loadBalancer = new aws.lb.LoadBalancer("load-balancer", {
-        name: `${appName}-alb`,
-        loadBalancerType: "application",
-        subnets: subnetIds,
-        securityGroups: [loadBalancerSecurityGroup.id],
-    });
+const listener = new aws.lb.Listener("listener", {
+    loadBalancerArn: loadBalancer.arn,
+    port: 80,
+    protocol: "HTTP",
+    defaultActions: [{
+        type: "forward",
+        targetGroupArn: targetGroup.arn,
+    }],
+});
 
-    targetGroup = new aws.lb.TargetGroup("target-group", {
-        name: `${appName}-tg`,
-        port: containerPort,
-        protocol: "HTTP",
-        targetType: "ip",
-        vpcId: defaultVpc.id,
-        healthCheck: {
-            path: "/hello",
-            matcher: "200",
-        },
-    });
+const apiGatewayVpcLink = new aws.apigatewayv2.VpcLink("api-gateway-vpc-link", {
+    name: appName,
+    securityGroupIds: [apiGatewaySecurityGroup.id],
+    subnetIds,
+});
 
-    listener = new aws.lb.Listener("listener", {
-        loadBalancerArn: loadBalancer.arn,
-        port: 80,
-        protocol: "HTTP",
-        defaultActions: [{
-            type: "forward",
-            targetGroupArn: targetGroup.arn,
-        }],
-    });
-}
+const api = new aws.apigatewayv2.Api("api", {
+    name: appName,
+    protocolType: "HTTP",
+});
+
+const apiIntegration = new aws.apigatewayv2.Integration("api-integration", {
+    apiId: api.id,
+    integrationType: "HTTP_PROXY",
+    integrationMethod: "ANY",
+    integrationUri: listener.arn,
+    connectionType: "VPC_LINK",
+    connectionId: apiGatewayVpcLink.id,
+    payloadFormatVersion: "1.0",
+});
+
+new aws.apigatewayv2.Route("api-root-route", {
+    apiId: api.id,
+    routeKey: "ANY /",
+    target: pulumi.interpolate`integrations/${apiIntegration.id}`,
+});
+
+new aws.apigatewayv2.Route("api-proxy-route", {
+    apiId: api.id,
+    routeKey: "ANY /{proxy+}",
+    target: pulumi.interpolate`integrations/${apiIntegration.id}`,
+});
+
+new aws.apigatewayv2.Stage("api-stage", {
+    apiId: api.id,
+    name: "$default",
+    autoDeploy: true,
+});
 
 const taskDefinition = new aws.ecs.TaskDefinition("task-definition", {
     family: appName,
@@ -188,6 +287,7 @@ const taskDefinition = new aws.ecs.TaskDefinition("task-definition", {
     cpu,
     memory,
     executionRoleArn: taskExecutionRole.arn,
+    taskRoleArn: taskRole.arn,
     containerDefinitions: pulumi.jsonStringify([{
         name: appName,
         image: image.ref,
@@ -196,6 +296,13 @@ const taskDefinition = new aws.ecs.TaskDefinition("task-definition", {
             containerPort,
             hostPort: containerPort,
             protocol: "tcp",
+        }],
+        environment: [{
+            name: "COGNITO_USER_POOL_CLIENT_ID",
+            value: userPoolClient.id,
+        }, {
+            name: "AWS_REGION",
+            value: currentRegion.name,
         }],
         logConfiguration: {
             logDriver: "awslogs",
@@ -219,93 +326,25 @@ const service = new aws.ecs.Service("service", {
         subnets: subnetIds,
         securityGroups: [serviceSecurityGroup.id],
     },
-    loadBalancers: targetGroup ? [{
+    loadBalancers: [{
         targetGroupArn: targetGroup.arn,
         containerName: appName,
         containerPort,
-    }] : undefined,
+    }],
 }, {
-    dependsOn: listener ? [listener] : undefined,
+    dependsOn: [listener],
 });
-
-function runAwsJson(args: string[]): any {
-    const stdout = execFileSync("aws", args, {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    return JSON.parse(stdout);
-}
-
-const directTaskBaseUrl = pulumi
-    .all([cluster.name, service.name, currentRegion.name, pulumi.output(desiredCount), service.id])
-    .apply(([clusterName, serviceName, region, configuredDesiredCount]) => {
-        if (configuredDesiredCount < 1) {
-            return "disabled: desiredCount is 0";
-        }
-
-        execFileSync("aws", [
-            "ecs", "wait", "services-stable",
-            "--cluster", clusterName,
-            "--services", serviceName,
-            "--region", region,
-        ], { stdio: "ignore" });
-
-        const tasks = runAwsJson([
-            "ecs", "list-tasks",
-            "--cluster", clusterName,
-            "--service-name", serviceName,
-            "--desired-status", "RUNNING",
-            "--region", region,
-        ]);
-        const taskArn = tasks.taskArns?.[0];
-
-        if (!taskArn) {
-            return "unavailable: no running ECS task found";
-        }
-
-        const taskDescription = runAwsJson([
-            "ecs", "describe-tasks",
-            "--cluster", clusterName,
-            "--tasks", taskArn,
-            "--region", region,
-        ]);
-        const eniId = taskDescription.tasks?.[0]?.attachments
-            ?.flatMap((attachment: any) => attachment.details ?? [])
-            ?.find((detail: any) => detail.name === "networkInterfaceId")
-            ?.value;
-
-        if (!eniId) {
-            return "unavailable: no ECS task network interface found";
-        }
-
-        const networkInterface = runAwsJson([
-            "ec2", "describe-network-interfaces",
-            "--network-interface-ids", eniId,
-            "--region", region,
-        ]);
-        const publicIp = networkInterface.NetworkInterfaces?.[0]?.Association?.PublicIp;
-
-        if (!publicIp) {
-            return "unavailable: ECS task does not have a public IP";
-        }
-
-        return `http://${publicIp}:${containerPort}`;
-    });
 
 export const repositoryUrl = repository.repositoryUrl;
 export const imageRef = image.ref;
 export const clusterName = cluster.name;
 export const serviceName = service.name;
 export const taskFamily = taskDefinition.family;
-export const loadBalancerUrl = loadBalancer
-    ? pulumi.interpolate`http://${loadBalancer.dnsName}`
-    : "disabled";
-export const serviceBaseUrl = loadBalancer
-    ? pulumi.interpolate`http://${loadBalancer.dnsName}`
-    : directTaskBaseUrl;
+export const userPoolId = userPool.id;
+export const userPoolClientId = userPoolClient.id;
+export const loadBalancerUrl = pulumi.interpolate`http://${loadBalancer.dnsName}`;
+export const apiGatewayUrl = api.apiEndpoint;
+export const serviceBaseUrl = api.apiEndpoint;
 export const helloUrl = pulumi.interpolate`${serviceBaseUrl}/hello`;
 export const swaggerUrl = pulumi.interpolate`${serviceBaseUrl}/swagger-ui.html`;
-export const notes = enableLoadBalancer
-    ? "Use loadBalancerUrl for the public endpoint."
-    : "serviceBaseUrl uses the current ECS task public IP to minimize cost. It can change when ECS replaces the task. Set enableLoadBalancer=true for a stable URL.";
+export const notes = "Use apiGatewayUrl/serviceBaseUrl for the public endpoint. API Gateway forwards to the load balancer, which forwards to ECS.";

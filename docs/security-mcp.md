@@ -378,7 +378,7 @@ Current limitations:
 - It does not fuzz request parameters.
 - IaC and dependency checks are intentionally lightweight unless optional tools such as Checkov, Trivy, or ZAP are installed.
 - GitHub Code Scanning primarily displays failed SARIF results as alerts. Passing checks are still preserved in the uploaded workflow artifact.
-- With `enableLoadBalancer=false`, the ECS task public IP can change when the task is replaced. Pulumi outputs are updated during deploy, but a direct task URL is still not a stable production endpoint.
+- The public AWS target is the API Gateway URL from `pulumi stack output serviceBaseUrl`. API Gateway forwards to the load balancer, which forwards to ECS.
 - The deploy workflow currently waits up to 3 minutes for `/hello` to become ready. Very slow image pulls, networking delays, or ECS replacement events can still exceed that window.
 
 ## Improvement Ideas

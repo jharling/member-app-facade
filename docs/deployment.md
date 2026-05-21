@@ -10,9 +10,10 @@ The Pulumi stack defaults are intentionally small:
 - Desired task count: `1`
 - CloudWatch log retention: `3` days
 - ECR lifecycle policy: keep the latest `5` images
-- Application Load Balancer: disabled by default
+- Application Load Balancer: enabled permanently
+- API Gateway HTTP API: enabled permanently
 
-An ALB gives you a stable public URL, but it adds a steady monthly cost. With the default low-cost setup, the ECS task gets a public IP directly, but that IP can change when the task is replaced.
+API Gateway is the public service entry point. It forwards traffic through a VPC Link to the Application Load Balancer, and the load balancer forwards traffic to ECS. This is more stable than exposing the ECS task public IP directly, but the ALB adds a steady monthly cost.
 
 ## One-Time Setup
 
@@ -31,8 +32,6 @@ Optional low-cost stack settings:
 pulumi config set desiredCount 1
 pulumi config set cpu 256
 pulumi config set memory 512
-pulumi config set --path 'allowedCidrs[0]' '0.0.0.0/0'
-pulumi config set enableLoadBalancer false
 ```
 
 To stop runtime compute cost while keeping the infrastructure, set:
@@ -54,7 +53,7 @@ Repository variables:
 - `AWS_REGION`, for example `us-east-1`
 - `PULUMI_STACK`, for example `dev`
 
-The GitHub workflow uses AWS OIDC. The AWS IAM role must trust your GitHub repo and have permissions to manage ECR, ECS, IAM roles/policies, EC2 security groups, CloudWatch logs, and optionally ALB resources.
+The GitHub workflow uses AWS OIDC. The AWS IAM role must trust your GitHub repo and have permissions to manage ECR, ECS, IAM roles/policies, EC2 security groups, CloudWatch logs, ALB resources, API Gateway v2 resources, and Cognito User Pools.
 
 Example role trust policy. Replace `jharling/member-app-facade` if your GitHub owner or repo name is different.
 
@@ -83,17 +82,6 @@ Example role trust policy. Replace `jharling/member-app-facade` if your GitHub o
 
 For the first deployment, the role needs enough permissions to create and update the resources in `infra/index.ts`. The pragmatic bootstrap option is to attach `AdministratorAccess` temporarily, deploy once, then replace it with a tighter policy after the resource list is known from the Pulumi preview/update.
 
-## Optional Load Balancer
-
-Enable a stable public URL:
-
-```bash
-cd infra
-pulumi config set enableLoadBalancer true
-pulumi up
-pulumi stack output loadBalancerUrl
-```
-
 ## Local Commands
 
 Preview:
@@ -114,13 +102,33 @@ After each deploy, Pulumi prints the current service URLs:
 
 ```bash
 pulumi stack output serviceBaseUrl
+pulumi stack output apiGatewayUrl
+pulumi stack output loadBalancerUrl
 pulumi stack output helloUrl
 pulumi stack output swaggerUrl
 ```
 
-When `enableLoadBalancer=false`, these outputs use the current ECS task public IP, which can change when ECS replaces the task. When `enableLoadBalancer=true`, they use the load balancer DNS name.
+`serviceBaseUrl` and `apiGatewayUrl` are the API Gateway URL and should be used as the public service URL. `loadBalancerUrl` is the internal ALB DNS name and is exported for AWS-side troubleshooting.
 
-The GitHub deploy workflow also runs a scoped security smoke test after deployment. The test target comes from `pulumi stack output serviceBaseUrl`, and the resolved host is explicitly allowlisted for that run. The current CI gate fails only on `high` severity findings so the known HTTP/TLS limitation of the low-cost no-load-balancer setup is reported without blocking deployment.
+The GitHub deploy workflow also runs a scoped security smoke test after deployment. The test target comes from `pulumi stack output serviceBaseUrl`, and the resolved host is explicitly allowlisted for that run. The current CI gate fails only on `high` severity findings.
+
+## Cognito Account API
+
+Pulumi creates a Cognito User Pool and app client during deployment. The ECS task receives the app client ID in `COGNITO_USER_POOL_CLIENT_ID` and calls Cognito through the AWS SDK.
+
+Account endpoints:
+
+- `POST /accounts`
+- `POST /accounts/confirm`
+- `POST /accounts/login`
+- `POST /accounts/forgot-password`
+- `POST /accounts/forgot-password/confirm`
+
+The Swagger page is available at:
+
+```bash
+pulumi stack output swaggerUrl
+```
 
 Destroy all AWS resources:
 
