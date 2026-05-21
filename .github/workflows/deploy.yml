@@ -50,6 +50,10 @@ jobs:
         working-directory: security
         run: npm ci
 
+      - name: Build security test tools
+        working-directory: security
+        run: npm run build
+
       - name: Deploy with Pulumi
         uses: pulumi/actions@v6
         with:
