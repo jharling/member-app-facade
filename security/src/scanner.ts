@@ -81,6 +81,39 @@ function header(response: Response, name: string): string | null {
     return response.headers.get(name);
 }
 
+function operationEntries(apiDocs: any): Array<{ method: string; path: string; operation: any }> {
+    const methods = new Set(["get", "post", "put", "patch", "delete", "head", "options"]);
+    const paths = apiDocs?.paths ?? {};
+
+    return Object.entries(paths).flatMap(([path, pathItem]: [string, any]) => {
+        return Object.entries(pathItem ?? {})
+            .filter(([method]) => methods.has(method.toLowerCase()))
+            .map(([method, operation]) => ({
+                method: method.toUpperCase(),
+                path,
+                operation,
+            }));
+    });
+}
+
+function concretePath(openApiPath: string): string | undefined {
+    if (openApiPath.includes("{")) {
+        return undefined;
+    }
+
+    return openApiPath.startsWith("/") ? openApiPath : `/${openApiPath}`;
+}
+
+async function request(method: string, url: URL): Promise<Response> {
+    return fetch(url, {
+        method,
+        redirect: "manual",
+        headers: {
+            "user-agent": "member-app-facade-security-smoke-test/0.1.0",
+        },
+    });
+}
+
 export async function scanTarget(options: ScanOptions): Promise<ScanResult> {
     const failOn = options.failOn ?? "medium";
     const readinessRetries = options.readinessRetries ?? defaultReadinessRetries;
@@ -193,6 +226,90 @@ export async function scanTarget(options: ScanOptions): Promise<ScanResult> {
         detail: "The OpenAPI document should include GET /hello.",
         recommendation: "Add or fix OpenAPI annotations if the endpoint is missing from the generated spec.",
     });
+
+    if (apiDocsJson?.paths) {
+        const operations = operationEntries(apiDocsJson);
+
+        findings.push({
+            id: "OPENAPI-OPERATIONS-DISCOVERED",
+            severity: "info",
+            passed: operations.length > 0,
+            title: "OpenAPI declares at least one operation",
+            detail: `Discovered ${operations.length} documented operation(s).`,
+            recommendation: "Document all externally reachable endpoints in OpenAPI.",
+        });
+
+        for (const { method, path, operation } of operations) {
+            const operationId = `OPENAPI-${method}-${path.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toUpperCase()}`;
+            const summary = operation?.summary ?? operation?.description;
+            const responses = operation?.responses ?? {};
+            const hasSuccessResponse = Object.keys(responses).some((status) => /^2\d\d$/.test(status));
+            const hasErrorResponse = Object.keys(responses).some((status) => /^[45]\d\d$/.test(status));
+
+            findings.push({
+                id: `${operationId}-SUMMARY`,
+                severity: "low",
+                passed: Boolean(summary),
+                title: `${method} ${path} has summary or description`,
+                detail: summary ? `Summary/description is present for ${method} ${path}.` : `Summary/description is missing for ${method} ${path}.`,
+                recommendation: "Add a short summary or description for each OpenAPI operation.",
+            });
+
+            findings.push({
+                id: `${operationId}-RESPONSES`,
+                severity: "low",
+                passed: hasSuccessResponse && hasErrorResponse,
+                title: `${method} ${path} documents success and error responses`,
+                detail: `Documented response statuses for ${method} ${path}: ${Object.keys(responses).join(", ") || "none"}.`,
+                recommendation: "Document at least one 2xx response and one 4xx/5xx response for each operation.",
+            });
+
+            const runnablePath = concretePath(path);
+            if (method === "GET" && runnablePath) {
+                try {
+                    const response = await request("GET", new URL(runnablePath, baseUrl));
+                    const body = await response.text();
+                    findings.push({
+                        id: `${operationId}-GET-RUNTIME`,
+                        severity: "medium",
+                        passed: response.status < 500,
+                        title: `${method} ${path} does not return a server error`,
+                        detail: `GET ${runnablePath} returned HTTP ${response.status}.`,
+                        recommendation: "Fix unexpected 5xx responses for documented GET endpoints.",
+                    });
+                    findings.push({
+                        id: `${operationId}-NO-STACKTRACE`,
+                        severity: "medium",
+                        passed: !/(Exception|Traceback|stack trace|at\s+[\w.$]+\()/i.test(body),
+                        title: `${method} ${path} does not expose stack traces`,
+                        detail: `GET ${runnablePath} response body length was ${body.length} bytes.`,
+                        recommendation: "Return sanitized error responses and keep stack traces in server logs only.",
+                    });
+                } catch (error) {
+                    const detail = error instanceof Error ? error.message : String(error);
+                    findings.push({
+                        id: `${operationId}-GET-RUNTIME`,
+                        severity: "medium",
+                        passed: false,
+                        title: `${method} ${path} is reachable for safe GET test`,
+                        detail: `GET ${runnablePath} failed: ${detail}.`,
+                        recommendation: "Confirm documented GET endpoints are reachable or remove stale OpenAPI operations.",
+                    });
+                }
+            } else {
+                findings.push({
+                    id: `${operationId}-RUNTIME-SKIPPED`,
+                    severity: "info",
+                    passed: true,
+                    title: `${method} ${path} runtime test skipped`,
+                    detail: runnablePath
+                        ? `Runtime test skipped for ${method} because only GET operations are exercised automatically.`
+                        : `Runtime test skipped because ${path} contains path parameters and no test values are configured.`,
+                    recommendation: "Add configured test examples before automatically exercising parameterized or state-changing operations.",
+                });
+            }
+        }
+    }
 
     findings.push({
         id: "NO-SERVER-HEADER",

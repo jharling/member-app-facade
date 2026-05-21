@@ -37,6 +37,11 @@ That means every deployment tests the actual URL that Pulumi believes is current
 - Swagger UI is reachable
 - `/v3/api-docs` returns a valid OpenAPI document
 - `GET /hello` is documented in OpenAPI
+- OpenAPI declares at least one operation
+- each OpenAPI operation has a summary or description
+- each OpenAPI operation documents success and error responses
+- non-parameterized `GET` operations do not return server errors
+- non-parameterized `GET` operations do not expose stack traces
 - common information-disclosure headers are absent:
   - `Server`
   - `X-Powered-By`
@@ -78,6 +83,13 @@ The scanner accepts a base target URL and builds the specific paths it needs:
 ```
 
 It then performs simple HTTP requests and evaluates the response status, body, headers, and OpenAPI content.
+
+For OpenAPI-driven tests, the scanner reads `/v3/api-docs`, enumerates documented operations, and runs safe checks:
+
+- documentation checks for every operation
+- runtime checks only for concrete `GET` endpoints
+- parameterized paths are skipped until test values are configured
+- state-changing methods such as `POST`, `PUT`, `PATCH`, and `DELETE` are not executed automatically
 
 For safety, non-local targets must be explicitly allowlisted. Localhost is allowed by default:
 
@@ -359,7 +371,7 @@ The current scanner is intentionally shallow. It is a security smoke test, not a
 
 Current limitations:
 
-- It only checks a few known URLs.
+- Runtime OpenAPI checks only exercise concrete `GET` operations.
 - It does not crawl the application.
 - It does not authenticate.
 - It does not perform destructive tests.
