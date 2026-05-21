@@ -18,6 +18,10 @@ The deploy workflow runs the CLI after Pulumi deploys the service:
 
 - `.github/workflows/deploy.yml`
 
+The scheduled security workflow runs recurring checks outside the deploy path:
+
+- `.github/workflows/security-scheduled.yml`
+
 The scanner target comes from Pulumi output:
 
 ```bash
@@ -249,6 +253,31 @@ SARIF is also uploaded using `github/codeql-action/upload-sarif`. The SARIF file
 2. Go to `Security`.
 3. Open `Code scanning`.
 4. Filter by the `member-app-facade-security-smoke-test` category.
+
+## Scheduled Security Workflow
+
+The scheduled workflow runs daily at `08:00 UTC` and can also be started manually from GitHub Actions.
+
+It runs:
+
+- deployed service smoke scan
+- npm audit for `infra`
+- npm audit for `security`
+- Gradle runtime dependency resolution
+- JSON/SARIF report upload as the `scheduled-security-report` artifact
+- SARIF upload to GitHub Code Scanning
+
+GitHub path:
+
+```text
+Actions -> Scheduled Security Scan
+```
+
+Code scanning category:
+
+```text
+scheduled-security-smoke-test
+```
 
 ## Local CLI Usage
 

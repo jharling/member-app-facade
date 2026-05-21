@@ -1,0 +1,101 @@
+name: Scheduled Security Scan
+
+on:
+  schedule:
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            infra/package-lock.json
+            security/package-lock.json
+
+      - name: Install infrastructure dependencies
+        working-directory: infra
+        run: npm ci
+
+      - name: Install security test dependencies
+        working-directory: security
+        run: npm ci
+
+      - name: Build security test tools
+        working-directory: security
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Run deployed service smoke scan
+        id: deployed-service-smoke-scan
+        continue-on-error: true
+        run: |
+          TARGET_URL="$(pulumi stack output serviceBaseUrl --cwd infra)"
+          TARGET_HOST="$(node -e "console.log(new URL(process.argv[1]).hostname)" "$TARGET_URL")"
+          npm --prefix security run scan -- \
+            --target-url "$TARGET_URL" \
+            --allow-host "$TARGET_HOST" \
+            --fail-on high \
+            --readiness-retries 36 \
+            --readiness-delay-ms 5000 \
+            --sarif security-report.sarif \
+            --json-output security-report.json
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Run npm dependency audit
+        run: |
+          npm audit --audit-level=high --prefix infra
+          npm audit --audit-level=high --prefix security
+
+      - name: Resolve Gradle dependencies
+        run: ./gradlew dependencies --configuration runtimeClasspath --no-daemon
+
+      - name: Upload security scan artifacts
+        if: always() && hashFiles('security-report.*') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: scheduled-security-report
+          path: |
+            security-report.json
+            security-report.sarif
+          if-no-files-found: error
+
+      - name: Upload security scan SARIF
+        if: always() && hashFiles('security-report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: security-report.sarif
+          category: scheduled-security-smoke-test
+
+      - name: Fail when deployed service smoke scan fails
+        if: steps.deployed-service-smoke-scan.outcome == 'failure'
+        run: exit 1
