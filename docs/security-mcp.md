@@ -126,12 +126,13 @@ npm --prefix security run scan -- \
   --allow-host "$TARGET_HOST" \
   --fail-on high \
   --readiness-retries 36 \
-  --readiness-delay-ms 5000
+  --readiness-delay-ms 5000 \
+  --sarif security-report.sarif
 ```
 
 The readiness settings make CI wait up to 3 minutes for `/hello` to return `HTTP 200`. This avoids a common ECS first-deploy race where the service has been created but the new task is not yet accepting traffic on its public IP.
 
-The CI report appears in GitHub Actions:
+The text report appears in GitHub Actions:
 
 1. Open the repository in GitHub.
 2. Go to `Actions`.
@@ -139,7 +140,12 @@ The CI report appears in GitHub Actions:
 4. Open the `deploy` job.
 5. Expand `Run security smoke test`.
 
-The text report is printed directly in the logs.
+Failed findings are also uploaded as SARIF using `github/codeql-action/upload-sarif`. After a workflow run, code scanning alerts appear in:
+
+1. Open the repository in GitHub.
+2. Go to `Security`.
+3. Open `Code scanning`.
+4. Filter by the `member-app-facade-security-smoke-test` category.
 
 ## Local CLI Usage
 
@@ -156,6 +162,14 @@ For JSON output:
 npm run scan -- \
   --target-url http://127.0.0.1:8080 \
   --json
+```
+
+For SARIF output:
+
+```bash
+npm run scan -- \
+  --target-url http://127.0.0.1:8080 \
+  --sarif security-report.sarif
 ```
 
 For a deployed ECS task:
@@ -211,7 +225,7 @@ Current limitations:
 - It does not perform destructive tests.
 - It does not fuzz request parameters.
 - It does not validate AWS-side controls such as security group rules, IAM policies, or ECS task role permissions.
-- It does not currently produce a persisted artifact in GitHub Actions.
+- It only uploads failed findings to SARIF. Passing checks remain visible in the workflow log, not as code scanning alerts.
 - With `enableLoadBalancer=false`, the ECS task public IP can change when the task is replaced. Pulumi outputs are updated during deploy, but a direct task URL is still not a stable production endpoint.
 - The deploy workflow currently waits up to 3 minutes for `/hello` to become ready. Very slow image pulls, networking delays, or ECS replacement events can still exceed that window.
 
@@ -233,9 +247,13 @@ npm --prefix security run scan -- \
 
 Then use `actions/upload-artifact` to retain reports per workflow run.
 
-### Add SARIF Output
+### Improve SARIF Locations
 
-Add a SARIF formatter so findings appear in GitHub's `Security` tab as code scanning alerts. This would make failed checks easier to track over time.
+The current SARIF file anchors findings to `security/src/scanner.ts`, because the findings are runtime deployment checks rather than source-code line findings. A future improvement could map each finding to a more useful file, such as:
+
+- `infra/index.ts` for AWS exposure or HTTP findings
+- `src/main/resources/application.properties` for server configuration findings
+- controller source files for route-specific findings
 
 ### Add OpenAPI-Driven Tests
 

@@ -1,4 +1,6 @@
 import { formatScanResult, scanTarget, Severity } from "./scanner.js";
+import { formatSarif } from "./sarif.js";
+import { writeFileSync } from "fs";
 
 interface CliOptions {
     targetUrl?: string;
@@ -6,6 +8,7 @@ interface CliOptions {
     allowedHosts: string[];
     readinessRetries?: number;
     readinessDelayMs?: number;
+    sarif?: string;
     json: boolean;
 }
 
@@ -36,6 +39,9 @@ function parseArgs(args: string[]): CliOptions {
             index += 1;
         } else if (arg === "--json") {
             options.json = true;
+        } else if (arg === "--sarif") {
+            options.sarif = next;
+            index += 1;
         } else if (arg === "--help" || arg === "-h") {
             printHelp();
             process.exit(0);
@@ -56,6 +62,7 @@ Options:
   --fail-on <severity>   info, low, medium, or high. Default: medium
   --readiness-retries <n> Number of /hello readiness attempts. Default: 30
   --readiness-delay-ms <n> Delay between readiness attempts. Default: 5000
+  --sarif <path>         Write failed findings in SARIF format for GitHub code scanning
   --json                 Print JSON instead of text
 `);
 }
@@ -80,6 +87,10 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(result, null, 2));
     } else {
         console.log(formatScanResult(result));
+    }
+
+    if (options.sarif) {
+        writeFileSync(options.sarif, `${JSON.stringify(formatSarif(result), null, 2)}\n`);
     }
 
     if (!result.passed) {
