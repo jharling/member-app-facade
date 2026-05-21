@@ -13,7 +13,7 @@ The Pulumi stack defaults are intentionally small:
 - Application Load Balancer: enabled permanently
 - API Gateway HTTP API: enabled permanently
 
-API Gateway is the public service entry point. It forwards traffic through a VPC Link to the Application Load Balancer, and the load balancer forwards traffic to ECS. This is more stable than exposing the ECS task public IP directly, but the ALB adds a steady monthly cost.
+API Gateway is the main public service entry point. It forwards traffic to the Application Load Balancer, and the load balancer forwards traffic to ECS. This is more stable than exposing the ECS task public IP directly, but the ALB adds a steady monthly cost.
 
 ## One-Time Setup
 
@@ -32,6 +32,7 @@ Optional low-cost stack settings:
 pulumi config set desiredCount 1
 pulumi config set cpu 256
 pulumi config set memory 512
+pulumi config set --path 'allowedCidrs[0]' '0.0.0.0/0'
 ```
 
 To stop runtime compute cost while keeping the infrastructure, set:
@@ -108,7 +109,7 @@ pulumi stack output helloUrl
 pulumi stack output swaggerUrl
 ```
 
-`serviceBaseUrl` and `apiGatewayUrl` are the API Gateway URL and should be used as the public service URL. `loadBalancerUrl` is the internal ALB DNS name and is exported for AWS-side troubleshooting.
+`serviceBaseUrl` and `apiGatewayUrl` are the API Gateway URL and should be used as the public service URL. `loadBalancerUrl` is exported for troubleshooting the ALB path directly.
 
 The GitHub deploy workflow also runs a scoped security smoke test after deployment. The test target comes from `pulumi stack output serviceBaseUrl`, and the resolved host is explicitly allowlisted for that run. The current CI gate fails only on `high` severity findings.
 
