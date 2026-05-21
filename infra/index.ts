@@ -1,6 +1,7 @@
 import * as aws from "@pulumi/aws";
 import * as dockerBuild from "@pulumi/docker-build";
 import * as pulumi from "@pulumi/pulumi";
+import { execFileSync } from "child_process";
 
 const appName = "member-app-facade";
 const containerPort = 8080;
@@ -227,6 +228,71 @@ const service = new aws.ecs.Service("service", {
     dependsOn: listener ? [listener] : undefined,
 });
 
+function runAwsJson(args: string[]): any {
+    const stdout = execFileSync("aws", args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    return JSON.parse(stdout);
+}
+
+const directTaskBaseUrl = pulumi
+    .all([cluster.name, service.name, currentRegion.name, pulumi.output(desiredCount), service.id])
+    .apply(([clusterName, serviceName, region, configuredDesiredCount]) => {
+        if (configuredDesiredCount < 1) {
+            return "disabled: desiredCount is 0";
+        }
+
+        execFileSync("aws", [
+            "ecs", "wait", "services-stable",
+            "--cluster", clusterName,
+            "--services", serviceName,
+            "--region", region,
+        ], { stdio: "ignore" });
+
+        const tasks = runAwsJson([
+            "ecs", "list-tasks",
+            "--cluster", clusterName,
+            "--service-name", serviceName,
+            "--desired-status", "RUNNING",
+            "--region", region,
+        ]);
+        const taskArn = tasks.taskArns?.[0];
+
+        if (!taskArn) {
+            return "unavailable: no running ECS task found";
+        }
+
+        const taskDescription = runAwsJson([
+            "ecs", "describe-tasks",
+            "--cluster", clusterName,
+            "--tasks", taskArn,
+            "--region", region,
+        ]);
+        const eniId = taskDescription.tasks?.[0]?.attachments
+            ?.flatMap((attachment: any) => attachment.details ?? [])
+            ?.find((detail: any) => detail.name === "networkInterfaceId")
+            ?.value;
+
+        if (!eniId) {
+            return "unavailable: no ECS task network interface found";
+        }
+
+        const networkInterface = runAwsJson([
+            "ec2", "describe-network-interfaces",
+            "--network-interface-ids", eniId,
+            "--region", region,
+        ]);
+        const publicIp = networkInterface.NetworkInterfaces?.[0]?.Association?.PublicIp;
+
+        if (!publicIp) {
+            return "unavailable: ECS task does not have a public IP";
+        }
+
+        return `http://${publicIp}:${containerPort}`;
+    });
+
 export const repositoryUrl = repository.repositoryUrl;
 export const imageRef = image.ref;
 export const clusterName = cluster.name;
@@ -235,6 +301,11 @@ export const taskFamily = taskDefinition.family;
 export const loadBalancerUrl = loadBalancer
     ? pulumi.interpolate`http://${loadBalancer.dnsName}`
     : "disabled";
+export const serviceBaseUrl = loadBalancer
+    ? pulumi.interpolate`http://${loadBalancer.dnsName}`
+    : directTaskBaseUrl;
+export const helloUrl = pulumi.interpolate`${serviceBaseUrl}/hello`;
+export const swaggerUrl = pulumi.interpolate`${serviceBaseUrl}/swagger-ui.html`;
 export const notes = enableLoadBalancer
     ? "Use loadBalancerUrl for the public endpoint."
-    : "No load balancer was created to minimize cost. ECS tasks get public IPs, but they are not stable across deployments. Set enableLoadBalancer=true for a stable URL.";
+    : "serviceBaseUrl uses the current ECS task public IP to minimize cost. It can change when ECS replaces the task. Set enableLoadBalancer=true for a stable URL.";

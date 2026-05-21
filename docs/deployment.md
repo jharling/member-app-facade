@@ -110,6 +110,16 @@ cd infra
 npm run deploy
 ```
 
+After each deploy, Pulumi prints the current service URLs:
+
+```bash
+pulumi stack output serviceBaseUrl
+pulumi stack output helloUrl
+pulumi stack output swaggerUrl
+```
+
+When `enableLoadBalancer=false`, these outputs use the current ECS task public IP, which can change when ECS replaces the task. When `enableLoadBalancer=true`, they use the load balancer DNS name.
+
 Destroy all AWS resources:
 
 ```bash

@@ -3,8 +3,8 @@
 .gradle
 .idea
 build
-infra/node_modules
-infra/bin
+docs
+infra
 lib
 out
 *.iml
