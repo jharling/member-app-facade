@@ -2,7 +2,8 @@ import { Finding, ScanResult, Severity } from "./scanner.js";
 
 interface SarifResult {
     ruleId: string;
-    level: "note" | "warning" | "error";
+    level: "none" | "note" | "warning" | "error";
+    kind: "pass" | "fail";
     message: {
         text: string;
     };
@@ -32,8 +33,6 @@ function ruleHelp(finding: Finding): string {
 }
 
 export function formatSarif(result: ScanResult): object {
-    const failedFindings = result.findings.filter((finding) => !finding.passed);
-
     return {
         version: "2.1.0",
         $schema: "https://json.schemastore.org/sarif-2.1.0.json",
@@ -68,11 +67,13 @@ export function formatSarif(result: ScanResult): object {
                     failOn: result.failOn,
                 },
             }],
-            results: failedFindings.map((finding) => ({
+            results: result.findings.map((finding) => ({
                 ruleId: finding.id,
-                level: sarifLevelBySeverity[finding.severity],
+                level: finding.passed ? "none" : sarifLevelBySeverity[finding.severity],
+                kind: finding.passed ? "pass" : "fail",
                 message: {
                     text: [
+                        finding.passed ? "PASS" : "FAIL",
                         finding.title,
                         finding.detail,
                         finding.recommendation ? `Recommendation: ${finding.recommendation}` : undefined,

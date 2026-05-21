@@ -79,9 +79,20 @@ jobs:
             --fail-on high \
             --readiness-retries 36 \
             --readiness-delay-ms 5000 \
-            --sarif security-report.sarif
+            --sarif security-report.sarif \
+            --json-output security-report.json
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - name: Upload security smoke test artifacts
+        if: always() && hashFiles('security-report.*') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: security-smoke-test-report
+          path: |
+            security-report.json
+            security-report.sarif
+          if-no-files-found: error
 
       - name: Upload security smoke test SARIF
         if: always() && hashFiles('security-report.sarif') != ''

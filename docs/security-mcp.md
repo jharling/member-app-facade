@@ -227,7 +227,8 @@ npm --prefix security run scan -- \
   --fail-on high \
   --readiness-retries 36 \
   --readiness-delay-ms 5000 \
-  --sarif security-report.sarif
+  --sarif security-report.sarif \
+  --json-output security-report.json
 ```
 
 The readiness settings make CI wait up to 3 minutes for `/hello` to return `HTTP 200`. This avoids a common ECS first-deploy race where the service has been created but the new task is not yet accepting traffic on its public IP.
@@ -240,7 +241,9 @@ The text report appears in GitHub Actions:
 4. Open the `deploy` job.
 5. Expand `Run security smoke test`.
 
-Failed findings are also uploaded as SARIF using `github/codeql-action/upload-sarif`. After a workflow run, code scanning alerts appear in:
+The workflow also uploads `security-report.json` and `security-report.sarif` as a GitHub Actions artifact named `security-smoke-test-report`. This artifact contains every finding from the scan, including passing checks.
+
+SARIF is also uploaded using `github/codeql-action/upload-sarif`. The SARIF file includes every finding with SARIF `kind` set to either `pass` or `fail`. Failed findings appear as code scanning alerts in:
 
 1. Open the repository in GitHub.
 2. Go to `Security`.
@@ -262,6 +265,14 @@ For JSON output:
 npm run scan -- \
   --target-url http://127.0.0.1:8080 \
   --json
+```
+
+For a JSON report file:
+
+```bash
+npm run scan -- \
+  --target-url http://127.0.0.1:8080 \
+  --json-output security-report.json
 ```
 
 For SARIF output:
@@ -325,15 +336,15 @@ Current limitations:
 - It does not perform destructive tests.
 - It does not fuzz request parameters.
 - IaC and dependency checks are intentionally lightweight unless optional tools such as Checkov, Trivy, or ZAP are installed.
-- It only uploads failed findings to SARIF. Passing checks remain visible in the workflow log, not as code scanning alerts.
+- GitHub Code Scanning primarily displays failed SARIF results as alerts. Passing checks are still preserved in the uploaded workflow artifact.
 - With `enableLoadBalancer=false`, the ECS task public IP can change when the task is replaced. Pulumi outputs are updated during deploy, but a direct task URL is still not a stable production endpoint.
 - The deploy workflow currently waits up to 3 minutes for `/hello` to become ready. Very slow image pulls, networking delays, or ECS replacement events can still exceed that window.
 
 ## Improvement Ideas
 
-### Persist Reports In CI
+### Improve Report Persistence
 
-Write JSON and text reports to files and upload them as GitHub Actions artifacts:
+The workflow uploads JSON and SARIF reports as artifacts. Future improvements could also upload a human-readable Markdown summary:
 
 ```bash
 npm --prefix security run scan -- \
@@ -342,10 +353,11 @@ npm --prefix security run scan -- \
   --fail-on high \
   --readiness-retries 36 \
   --readiness-delay-ms 5000 \
-  --json > security-report.json
+  --json-output security-report.json \
+  --sarif security-report.sarif
 ```
 
-Then use `actions/upload-artifact` to retain reports per workflow run.
+Then generate `security-report.md` from the JSON and upload all three files.
 
 ### Improve SARIF Locations
 

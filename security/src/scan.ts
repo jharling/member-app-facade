@@ -9,6 +9,7 @@ interface CliOptions {
     readinessRetries?: number;
     readinessDelayMs?: number;
     sarif?: string;
+    jsonOutput?: string;
     json: boolean;
 }
 
@@ -42,6 +43,9 @@ function parseArgs(args: string[]): CliOptions {
         } else if (arg === "--sarif") {
             options.sarif = next;
             index += 1;
+        } else if (arg === "--json-output") {
+            options.jsonOutput = next;
+            index += 1;
         } else if (arg === "--help" || arg === "-h") {
             printHelp();
             process.exit(0);
@@ -62,7 +66,8 @@ Options:
   --fail-on <severity>   info, low, medium, or high. Default: medium
   --readiness-retries <n> Number of /hello readiness attempts. Default: 30
   --readiness-delay-ms <n> Delay between readiness attempts. Default: 5000
-  --sarif <path>         Write failed findings in SARIF format for GitHub code scanning
+  --sarif <path>         Write all findings in SARIF format for GitHub code scanning
+  --json-output <path>   Write the full scan result as JSON
   --json                 Print JSON instead of text
 `);
 }
@@ -91,6 +96,10 @@ async function main(): Promise<void> {
 
     if (options.sarif) {
         writeFileSync(options.sarif, `${JSON.stringify(formatSarif(result), null, 2)}\n`);
+    }
+
+    if (options.jsonOutput) {
+        writeFileSync(options.jsonOutput, `${JSON.stringify(result, null, 2)}\n`);
     }
 
     if (!result.passed) {
