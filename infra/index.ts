@@ -161,7 +161,7 @@ new aws.iam.RolePolicy("task-cognito-policy", {
 
 const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-security-group", {
     name: `${appName}-alb`,
-    description: "Allow HTTP traffic to the load balancer",
+    description: "Allow API Gateway traffic to the load balancer",
     vpcId: defaultVpc.id,
     ingress: [{
         protocol: "tcp",
@@ -177,11 +177,13 @@ const loadBalancerSecurityGroup = new aws.ec2.SecurityGroup("load-balancer-secur
         cidrBlocks: ["0.0.0.0/0"],
         description: "Outbound traffic",
     }],
+}, {
+    ignoreChanges: ["description"],
 });
 
 const serviceSecurityGroup = new aws.ec2.SecurityGroup("service-security-group", {
     name: `${appName}-service`,
-    description: "Allow HTTP traffic to the ECS task",
+    description: "Allow load balancer traffic to the ECS task",
     vpcId: defaultVpc.id,
     ingress: [{
         protocol: "tcp",
@@ -197,6 +199,8 @@ const serviceSecurityGroup = new aws.ec2.SecurityGroup("service-security-group",
         cidrBlocks: ["0.0.0.0/0"],
         description: "Outbound internet access",
     }],
+}, {
+    ignoreChanges: ["description"],
 });
 
 const loadBalancer = new aws.lb.LoadBalancer("load-balancer", {
